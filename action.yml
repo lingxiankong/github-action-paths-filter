@@ -2,10 +2,6 @@ name: 'Paths Changes Filter'
 description: 'Conditionally run actions based on files modified by PR, feature branch or pushed commits'
 author: 'Dorny'
 inputs:
-  token:
-    description: 'GitHub token'
-    default: ${{ github.token }}
-    required: false
   filters:
     description: 'Path patterns to match against changed files'
     required: true
@@ -22,10 +18,6 @@ inputs:
     description: 'Enables listing of files matching the filter: none, csv, json, shell, escape'
     default: 'none'
     required: false
-  initial-fetch-depth:
-    description: 'Number of commits to fetch'
-    default: '100'
-    required: false
 
 outputs:
   changes:
@@ -39,10 +31,8 @@ runs:
     - run: python3 ${{ github.action_path }}/main.py
       shell: bash
       env:
-        INPUT_TOKEN: ${{ inputs.token }}
         INPUT_FILTERS: ${{ inputs.filters }}
         INPUT_BASE: ${{ inputs.base }}
         INPUT_REF: ${{ inputs.ref }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_LIST_FILES: ${{ inputs.list-files }}
-        INPUT_INITIAL_FETCH_DEPTH: ${{ inputs.initial-fetch-depth }}

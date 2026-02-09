@@ -6,9 +6,11 @@ import re
 import shlex
 
 def debug(msg):
+    """Print a debug message to GitHub Actions log."""
     print(f"::debug::{msg}")
 
 def set_output(name, value):
+    """Set a GitHub Action output variable."""
     if "GITHUB_OUTPUT" in os.environ:
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"{name}={value}\n")
@@ -17,6 +19,7 @@ def set_output(name, value):
         print(f"::set-output name={name}::{value}")
 
 def run_command(command, cwd=None):
+    """Run a shell command and return its stdout, raising an error on failure."""
     debug(f"Running command: {command}")
     try:
         result = subprocess.run(
@@ -33,10 +36,14 @@ def run_command(command, cwd=None):
         debug(f"Command failed: {e.stderr}")
         raise
 
-def get_changed_files(base, ref, cwd):
+def get_commits(base, ref, cwd):
+    """
+    Get the list of changed files between base and ref.
+    Attempts to find a merge-base first to correctly identify changes on the branch.
+    Falls back to direct diff if merge-base calculation fails.
+    """
     # If base is not provided, we might be in a push event or generic context
     # But usually base is required for PRs.
-    # For now, let's assume we can use git diff.
 
     # 1. Resolve merge-base if needed
     if base and ref:
@@ -55,17 +62,42 @@ def get_changed_files(base, ref, cwd):
         cmd = f"git diff --name-only {base}"
     else:
         # No base provided, maybe try to diff against previous commit?
-        # Or if it's a push event, HEAD^ HEAD?
-        # dorny/paths-filter usually defaults base to 'master' if not provided for PRs.
-        # But here we execute what we are given.
-        # If nothing given, try HEAD^...HEAD
         debug("No base/ref provided, diffing HEAD^ HEAD")
-        cmd = "git diff --name-only HEAD^ HEAD"
+        try:
+            # Check if HEAD^ exists. If not, it's likely a root commit.
+            subprocess.run(["git", "rev-parse", "--verify", "HEAD^"],
+                           cwd=cwd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cmd = "git diff --name-only HEAD^ HEAD"
+        except subprocess.CalledProcessError:
+            debug("HEAD^ not found, assuming root commit. Diffing against empty tree.")
+            # This is the well-known Git SHA for an "empty tree" (a tree with no files).
+            # Diffing against this is the standard way to get a list of all files in the current commit
+            # as if they were all newly added.
+            EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+            cmd = f"git diff --name-only {EMPTY_TREE} HEAD"
 
     output = run_command(cmd, cwd)
     return [line.strip() for line in output.splitlines() if line.strip()]
 
+def get_event_data():
+    """Read and parse the GitHub event payload from file."""
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if event_path and os.path.exists(event_path):
+        try:
+            with open(event_path, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            debug("Failed to parse GITHUB_EVENT_PATH json")
+    return {}
+
 def glob_to_regex(pattern):
+    """
+    Convert a simplified glob pattern to a regex pattern.
+    Supports:
+        *  : Matches any character except path separator
+        ** : Matches any character including path separator (recursive)
+        ?  : Matches single character
+    """
     parts = pattern.split('/')
     regex_parts = []
     for i, part in enumerate(parts):
@@ -85,6 +117,7 @@ def glob_to_regex(pattern):
     res = ''
     for i, part in enumerate(regex_parts):
         if part == '__RECURSIVE__':
+            # Special handling for ** to match zero or more directories
             if i == 0:
                 if i < len(regex_parts) - 1:
                     res += '(?:.*/)?'
@@ -103,6 +136,11 @@ def glob_to_regex(pattern):
     return re.compile(f'^{res}$')
 
 def parse_filters(filters_input):
+    """
+    Parse filters input string.
+    Tries JSON first, then YAML.
+    Includes a lightweight fallback YAML parser if PyYAML is missing.
+    """
     # Try parsing as JSON first
     filters_input = filters_input.strip()
     if filters_input.startswith('{'):
@@ -137,10 +175,9 @@ def parse_filters(filters_input):
         return filters
 
 def main():
-    token = os.environ.get("INPUT_TOKEN", "")
     filters_input = os.environ.get("INPUT_FILTERS", "")
-    base = os.environ.get("INPUT_BASE", "")
-    ref = os.environ.get("INPUT_REF", "")
+    input_base = os.environ.get("INPUT_BASE", "")
+    input_ref = os.environ.get("INPUT_REF", "")
     working_directory = os.environ.get("INPUT_WORKING_DIRECTORY", ".")
     list_files_format = os.environ.get("INPUT_LIST_FILES", "none")
 
@@ -148,11 +185,40 @@ def main():
         print("::error::filters input is required")
         sys.exit(1)
 
+    # Determine base and ref from event payload if possible
+    # This aligns logic with dorny/paths-filter behavior
+    event = get_event_data()
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+
+    base = input_base
+    ref = input_ref
+
+    if event_name == "pull_request":
+        debug("Detected pull_request event, using PR base/head")
+        base = event.get("pull_request", {}).get("base", {}).get("sha")
+        ref = event.get("pull_request", {}).get("head", {}).get("sha")
+    elif event_name == "push":
+        debug("Detected push event")
+        if not input_base:
+            # If input base is not provided, try to use 'before' from event
+            before = event.get("before")
+            # The 'before' SHA will be all zeros (NULL_SHA) if the branch was just created (pushed new).
+            # In that case, there is no "before" commit to diff against on this branch.
+            # We only use 'before' as base if it's a valid commit SHA.
+            NULL_SHA = "0000000000000000000000000000000000000000"
+            if before and before != NULL_SHA:
+                base = before
+
+        if not input_ref:
+            ref = os.environ.get("GITHUB_SHA")
+
+    debug(f"Resolved base: {base}, ref: {ref}")
+
     filters = parse_filters(filters_input)
     debug(f"Parsed filters: {filters}")
 
     try:
-        changed_files = get_changed_files(base, ref, working_directory)
+        changed_files = get_commits(base, ref, working_directory)
         debug(f"Changed files: {changed_files}")
     except Exception as e:
         print(f"::error::Failed to get changed files: {e}")
@@ -160,6 +226,7 @@ def main():
 
     changes = []
 
+    # Match changed files against filters
     for filter_name, patterns in filters.items():
         if isinstance(patterns, str):
             patterns = [patterns]
