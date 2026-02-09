@@ -1,0 +1,48 @@
+name: 'Paths Changes Filter'
+description: 'Conditionally run actions based on files modified by PR, feature branch or pushed commits'
+author: 'Dorny'
+inputs:
+  token:
+    description: 'GitHub token'
+    default: ${{ github.token }}
+    required: false
+  filters:
+    description: 'Path patterns to match against changed files'
+    required: true
+  base:
+    description: 'Git reference (branch name) used as a base for diff'
+    required: false
+  ref:
+    description: 'Git reference (branch name) used as a head for diff'
+    required: false
+  working-directory:
+    description: 'Relative path under $GITHUB_WORKSPACE where the repository was checked out'
+    required: false
+  list-files:
+    description: 'Enables listing of files matching the filter: none, csv, json, shell, escape'
+    default: 'none'
+    required: false
+  initial-fetch-depth:
+    description: 'Number of commits to fetch'
+    default: '100'
+    required: false
+
+outputs:
+  changes:
+    description: 'JSON array with names of all filters matching any of changed files'
+# Dynamic outputs for each filter are not explicitly listed here but will be set by the script
+runs:
+  using: 'composite'
+  steps:
+    - run: pip install -r ${{ github.action_path }}/requirements.txt || echo "PyYAML not found, will attempt JSON parsing or simple YAML"
+      shell: bash
+    - run: python3 ${{ github.action_path }}/main.py
+      shell: bash
+      env:
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_FILTERS: ${{ inputs.filters }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_LIST_FILES: ${{ inputs.list-files }}
+        INPUT_INITIAL_FETCH_DEPTH: ${{ inputs.initial-fetch-depth }}
