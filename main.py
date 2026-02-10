@@ -65,8 +65,8 @@ def get_commits(base, ref, cwd):
         debug("No base/ref provided, diffing HEAD^ HEAD")
         try:
             # Check if HEAD^ exists. If not, it's likely a root commit.
-            subprocess.run(["git", "rev-parse", "--verify", "HEAD^"],
-                           cwd=cwd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("git rev-parse --verify HEAD^",
+                           cwd=cwd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             cmd = "git diff --name-only HEAD^ HEAD"
         except subprocess.CalledProcessError:
             debug("HEAD^ not found, assuming root commit. Diffing against empty tree.")
@@ -178,12 +178,22 @@ def main():
     filters_input = os.environ.get("INPUT_FILTERS", "")
     input_base = os.environ.get("INPUT_BASE", "")
     input_ref = os.environ.get("INPUT_REF", "")
-    working_directory = os.environ.get("INPUT_WORKING_DIRECTORY", ".")
+    input_wd = os.environ.get("INPUT_WORKING_DIRECTORY", "")
     list_files_format = os.environ.get("INPUT_LIST_FILES", "none")
 
     if not filters_input:
         print("::error::filters input is required")
         sys.exit(1)
+
+    github_workspace = os.environ.get("GITHUB_WORKSPACE") or os.getcwd()
+    if not input_wd or input_wd == ".":
+        working_directory = github_workspace
+    else:
+        # If absolute, use as is. If relative, join with workspace.
+        if os.path.isabs(input_wd):
+            working_directory = input_wd
+        else:
+            working_directory = os.path.join(github_workspace, input_wd)
 
     # Determine base and ref from event payload if possible
     # This aligns logic with dorny/paths-filter behavior
